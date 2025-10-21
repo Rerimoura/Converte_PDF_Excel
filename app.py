@@ -429,10 +429,9 @@ else:
     col_sup1, col_sup2, col_sup3 = st.columns([1, 2, 1])
     with col_sup2:
         st.markdown("### 💬 Precisa de ajuda?")
-        # mensagem_suporte = "Olá! Preciso de ajuda com o conversor de PDF para Excel."
-        # mensagem_encoded = mensagem_suporte.replace(" ", "%20")
-        whatsapp_url = f"api.whatsapp.com/send?phone={WHATSAPP_NUMBER}"
-        # ?text={mensagem_encoded}" comentário
+        mensagem_suporte = "Olá! Preciso de ajuda com o conversor de PDF para Excel."
+        mensagem_encoded = mensagem_suporte.replace(" ", "%20")
+        whatsapp_url = f"https://wa.me/{WHATSAPP_NUMBER}?text={mensagem_encoded}"
         
         st.markdown(
             f"""
@@ -452,7 +451,7 @@ else:
                     justify-content: center;
                     gap: 8px;
                 ">
-                    💬 Falar no WhatsApp
+                    💬 Mande mensagem para 34 992182544
                 </button>
             </a>
             """,

@@ -6,6 +6,8 @@ import tempfile
 import os
 import subprocess
 import zipfile
+import PyPDF2
+import re
 
 st.set_page_config(
     page_title="Conversor PDF para Excel",
@@ -27,8 +29,8 @@ except FileNotFoundError:
     st.stop()
 
 # Inicializar session state
-if 'arquivos_processados' not in st.session_state:
-    st.session_state.arquivos_processados = []
+if 'limpar' not in st.session_state:
+    st.session_state.limpar = False
 
 # Upload dos arquivos
 col1, col2 = st.columns([3, 1])
@@ -37,18 +39,26 @@ with col1:
         "Escolha um ou mais arquivos PDF",
         type=['pdf'],
         accept_multiple_files=True,
-        help="Selecione os arquivos PDF que contêm as tabelas"
+        help="Selecione os arquivos PDF que contêm as tabelas",
+        key='uploader' if not st.session_state.limpar else 'uploader_limpo'
     )
 
 with col2:
     st.write("")  # Espaçamento
     if st.button("🗑️ Limpar arquivos", use_container_width=True, type="secondary"):
-        st.session_state.arquivos_processados = []
+        st.session_state.limpar = not st.session_state.limpar
         st.rerun()
 
 if uploaded_files:
     # Opções de configuração
     st.sidebar.header("⚙️ Configurações")
+    
+    metodo_extracao = st.sidebar.selectbox(
+        "Método de extração",
+        ["Automático", "Lattice (tabelas com bordas)", "Stream (tabelas sem bordas)", "Texto (extração inteligente)"],
+        help="Lattice: melhor para tabelas com linhas visíveis. Stream: melhor para tabelas alinhadas por espaços. Texto: extrai e estrutura texto do PDF."
+    )
+    
     ajustar_headers = st.sidebar.checkbox(
         "Ajustar cabeçalhos automaticamente",
         value=False,
@@ -70,6 +80,214 @@ if uploaded_files:
         df.columns = novo_header
         return df.iloc[1:].reset_index(drop=True)
     
+    # Função para extrair texto e estruturar
+    def extrair_texto_estruturado(pdf_path):
+        """Extrai texto do PDF e tenta estruturar em tabela"""
+        try:
+            with open(pdf_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                texto_completo = ""
+                for page in reader.pages:
+                    texto_completo += page.extract_text() + "\n"
+            
+            linhas = texto_completo.split('\n')
+            
+            # Dicionário para armazenar dados estruturados
+            dados_pedido = {
+                'Informações Gerais': [],
+                'Produtos': []
+            }
+            
+            # --- EXTRAÇÃO DE INFORMAÇÕES GERAIS ---
+            info_geral = {}
+            for linha in linhas:
+                linha_limpa = linha.strip()
+                
+                # Número do Pedido
+                if 'Número do Pedido' in linha_limpa or 'Pedido:' in linha_limpa:
+                    match = re.search(r'(?:Número do Pedido:|Pedido:)\s*(\d+)', linha_limpa)
+                    if match:
+                        info_geral['Número do Pedido'] = match.group(1)
+                
+                # Fornecedor
+                if 'Fornecedor:' in linha_limpa:
+                    match = re.search(r'Fornecedor:\s*\d+\s*(.+?)(?:,\s*CNPJ|$)', linha_limpa)
+                    if match:
+                        info_geral['Fornecedor'] = match.group(1).strip()
+                
+                # CNPJ Fornecedor
+                if 'CNPJ:' in linha_limpa and 'Fornecedor' in linha_limpa:
+                    match = re.search(r'CNPJ:\s*([\d\.\/\-]+)', linha_limpa)
+                    if match:
+                        info_geral['CNPJ Fornecedor'] = match.group(1)
+                
+                # Empresa
+                if 'Empresa:' in linha_limpa and 'CNPJ' not in linha_limpa:
+                    match = re.search(r'Empresa:\s*\d+\s*(.+?)(?:,|$)', linha_limpa)
+                    if match:
+                        info_geral['Empresa'] = match.group(1).strip()
+                
+                # Datas
+                if 'Dt. Pedido' in linha_limpa:
+                    match = re.search(r'Dt\.\s*Pedido:\s*([\d\/]+)', linha_limpa)
+                    if match:
+                        info_geral['Data Pedido'] = match.group(1)
+                
+                if 'Dt. Entrega' in linha_limpa:
+                    match = re.search(r'Dt\.\s*Entrega:\s*([\d\/]+)', linha_limpa)
+                    if match:
+                        info_geral['Data Entrega'] = match.group(1)
+                
+                # Forma de Pagamento
+                if 'Forma Pgto' in linha_limpa or 'Forma de Pagamento' in linha_limpa:
+                    match = re.search(r'Forma\s+Pgto:\s*(.+?)(?:,\s*Espécie|$)', linha_limpa)
+                    if match:
+                        info_geral['Forma Pagamento'] = match.group(1).strip()
+                
+                # Frete
+                if 'Frete:' in linha_limpa and 'Forma' not in linha_limpa:
+                    match = re.search(r'Frete:\s*(\w+)', linha_limpa)
+                    if match:
+                        info_geral['Frete'] = match.group(1)
+            
+            # Adicionar informações gerais ao resultado
+            if info_geral:
+                for chave, valor in info_geral.items():
+                    dados_pedido['Informações Gerais'].append({
+                        'Campo': chave,
+                        'Valor': valor
+                    })
+            
+            # --- EXTRAÇÃO DE PRODUTOS ---
+            # Procurar linha de cabeçalho de produtos
+            idx_header = -1
+            for i, linha in enumerate(linhas):
+                if 'Código' in linha and 'Descrição' in linha and ('Qtde' in linha or 'Quantidade' in linha):
+                    idx_header = i
+                    break
+            
+            # Se encontrou cabeçalho, processar produtos
+            if idx_header != -1:
+                # Extrair produtos (próximas linhas após o cabeçalho)
+                for i in range(idx_header + 1, len(linhas)):
+                    linha = linhas[i].strip()
+                    
+                    # Parar em linhas de rodapé
+                    if any(x in linha.lower() for x in ['recebimento', 'comprador', 'vendedor', 'obrigatório', '---', 'pg:']):
+                        break
+                    
+                    if not linha or len(linha) < 10:
+                        continue
+                    
+                    # Tentar extrair dados do produto
+                    partes = re.split(r'\s{2,}', linha)
+                    
+                    if len(partes) >= 3:
+                        produto = {}
+                        
+                        # Código do produto (geralmente números no início)
+                        if partes[0].isdigit():
+                            produto['Código'] = partes[0]
+                        
+                        # Código de barras (geralmente 13 dígitos)
+                        for parte in partes:
+                            if parte.isdigit() and len(parte) >= 12:
+                                produto['Código Barras'] = parte
+                                break
+                        
+                        # Descrição (texto mais longo)
+                        descricoes = [p for p in partes if not p.replace('.', '').replace(',', '').isdigit() and len(p) > 3]
+                        if descricoes:
+                            produto['Descrição'] = ' '.join(descricoes[:2])
+                            if len(descricoes) > 2:
+                                produto['Marca'] = descricoes[2]
+                        
+                        # Quantidade (número com vírgula)
+                        for parte in partes:
+                            if ',' in parte or '.' in parte:
+                                try:
+                                    # Verifica se parece com quantidade (ex: 20,000 ou 20.000)
+                                    num_str = parte.replace('.', '').replace(',', '.')
+                                    num = float(num_str)
+                                    if num < 10000:  # Quantidade geralmente não é muito grande
+                                        produto['Quantidade'] = parte
+                                        break
+                                except:
+                                    pass
+                        
+                        # Valores monetários (procurar por números com vírgula e pelo menos 2 casas decimais)
+                        valores = []
+                        for p in partes:
+                            if ',' in p or '.' in p:
+                                try:
+                                    # Verificar se tem pelo menos 2 dígitos decimais
+                                    if ',' in p:
+                                        partes_decimal = p.split(',')
+                                    else:
+                                        partes_decimal = p.split('.')
+                                    
+                                    if len(partes_decimal) == 2 and len(partes_decimal[1]) >= 2:
+                                        valores.append(p)
+                                except:
+                                    pass
+                        
+                        if len(valores) >= 2:
+                            produto['Preço Unitário'] = valores[0]
+                            produto['Valor Total'] = valores[-1]
+                        
+                        # Embalagem (CX/20, UN, etc)
+                        for parte in partes:
+                            if '/' in parte or parte.upper() in ['CX', 'UN', 'PC', 'KG', 'LT']:
+                                produto['Embalagem'] = parte
+                                break
+                        
+                        if len(produto) >= 2:
+                            dados_pedido['Produtos'].append(produto)
+            
+            # Criar DataFrames
+            dfs = []
+            
+            if dados_pedido['Informações Gerais']:
+                df_info = pd.DataFrame(dados_pedido['Informações Gerais'])
+                dfs.append(df_info)
+            
+            if dados_pedido['Produtos']:
+                df_produtos = pd.DataFrame(dados_pedido['Produtos'])
+                dfs.append(df_produtos)
+            
+            # Se não conseguiu estruturar, retornar texto bruto organizado
+            if not dfs:
+                dados_genericos = []
+                for linha in linhas:
+                    linha = linha.strip()
+                    if not linha or len(linha) < 5:
+                        continue
+                    
+                    campos = re.split(r'\s{2,}', linha)
+                    if len(campos) >= 3:
+                        dados_genericos.append(campos)
+                
+                if dados_genericos and len(dados_genericos) > 1:
+                    max_cols = max(len(row) for row in dados_genericos)
+                    
+                    dados_padronizados = []
+                    for row in dados_genericos:
+                        while len(row) < max_cols:
+                            row.append('')
+                        dados_padronizados.append(row[:max_cols])
+                    
+                    df = pd.DataFrame(dados_padronizados[1:], columns=dados_padronizados[0])
+                    dfs.append(df)
+                else:
+                    df = pd.DataFrame({'Conteúdo': [l.strip() for l in linhas if l.strip()]})
+                    dfs.append(df)
+            
+            return dfs
+            
+        except Exception as e:
+            st.error(f"Erro ao extrair texto: {str(e)}")
+            return []
+    
     # Processar cada arquivo
     resultados = []
     
@@ -84,8 +302,34 @@ if uploaded_files:
         
         try:
             with st.spinner(f'Extraindo tabelas de {uploaded_file.name}...'):
-                # Extrair tabelas
-                tabelas = read_pdf(tmp_path, pages='all')
+                # Aplicar método selecionado
+                if metodo_extracao == "Texto (extração inteligente)":
+                    tabelas = extrair_texto_estruturado(tmp_path)
+                elif metodo_extracao == "Lattice (tabelas com bordas)":
+                    tabelas = read_pdf(tmp_path, pages='all', lattice=True)
+                elif metodo_extracao == "Stream (tabelas sem bordas)":
+                    tabelas = read_pdf(tmp_path, pages='all', stream=True)
+                else:  # Automático
+                    # Tentar extrair tabelas com diferentes métodos
+                    try:
+                        tabelas = read_pdf(tmp_path, pages='all', lattice=True)
+                        if not tabelas or all(df.empty for df in tabelas):
+                            raise Exception("Nenhuma tabela encontrada com método lattice")
+                    except:
+                        try:
+                            tabelas = read_pdf(tmp_path, pages='all', stream=True)
+                            if not tabelas or all(df.empty for df in tabelas):
+                                raise Exception("Nenhuma tabela encontrada com método stream")
+                        except:
+                            # Tentar extração de texto como último recurso
+                            tabelas = extrair_texto_estruturado(tmp_path)
+                            if not tabelas:
+                                tabelas = read_pdf(tmp_path, pages='all', guess=True, multiple_tables=True)
+            
+            if not tabelas or len(tabelas) == 0:
+                st.warning(f"⚠️ Nenhuma tabela foi encontrada em {uploaded_file.name}")
+                st.info("💡 Dica: Este PDF pode conter texto não estruturado ou tabelas em formato de imagem. Tente converter o PDF ou usar OCR.")
+                continue
             
             st.success(f'✅ Foram encontradas {len(tabelas)} tabelas!')
             
@@ -194,7 +438,7 @@ else:
     
     with st.expander("📦 Dependências necessárias"):
         st.code("""
-pip install streamlit pandas tabula-py openpyxl
+pip install streamlit pandas tabula-py openpyxl PyPDF2
         """, language="bash")
         st.warning("⚠️ **Importante**: Instale `tabula-py` (não `tabula`) e certifique-se de ter Java instalado!")
         st.markdown("Verificar Java: `java -version`")

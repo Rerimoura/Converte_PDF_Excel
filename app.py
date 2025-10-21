@@ -18,6 +18,9 @@ st.set_page_config(
 st.title("📊 Conversor de PDF para Excel")
 st.markdown("Extraia tabelas de arquivos PDF e converta para Excel facilmente!")
 
+# Número do WhatsApp (formato: código do país + DDD + número, sem espaços ou caracteres especiais)
+WHATSAPP_NUMBER = "553492182544"  # ⚠️ ALTERE AQUI para seu número real
+
 # Verificar se Java está instalado
 try:
     result = subprocess.run(['java', '-version'], capture_output=True, text=True)
@@ -421,6 +424,42 @@ if uploaded_files:
 else:
     # Instruções quando nenhum arquivo foi carregado
     st.info("👆 Faça upload de um ou mais arquivos PDF para começar")
+
+    # Botão de WhatsApp para suporte geral
+    col_sup1, col_sup2, col_sup3 = st.columns([1, 2, 1])
+    with col_sup2:
+        st.markdown("### 💬 Precisa de ajuda?")
+        # mensagem_suporte = "Olá! Preciso de ajuda com o conversor de PDF para Excel."
+        # mensagem_encoded = mensagem_suporte.replace(" ", "%20")
+        whatsapp_url = f"api.whatsapp.com/send?phone={WHATSAPP_NUMBER}"
+        # ?text={mensagem_encoded}"
+        
+        st.markdown(
+            f"""
+            <a href="{whatsapp_url}" target="_blank">
+                <button style="
+                    background-color: #25D366;
+                    color: white;
+                    padding: 12px 24px;
+                    border: none;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-size: 16px;
+                    font-weight: bold;
+                    width: 100%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
+                ">
+                    💬 Falar no WhatsApp
+                </button>
+            </a>
+            """,
+            unsafe_allow_html=True
+        )
+    
+    st.divider()
     
     with st.expander("ℹ️ Como usar"):
         st.markdown("""

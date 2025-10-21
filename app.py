@@ -432,7 +432,7 @@ else:
         # mensagem_suporte = "Olá! Preciso de ajuda com o conversor de PDF para Excel."
         # mensagem_encoded = mensagem_suporte.replace(" ", "%20")
         whatsapp_url = f"api.whatsapp.com/send?phone={WHATSAPP_NUMBER}"
-        # ?text={mensagem_encoded}"
+        # ?text={mensagem_encoded}" comentário
         
         st.markdown(
             f"""

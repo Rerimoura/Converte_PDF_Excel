@@ -2,3 +2,4 @@ streamlit
 pandas
 tabula-py
 openpyxl
+PyPDF2

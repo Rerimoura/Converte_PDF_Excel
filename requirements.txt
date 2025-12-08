@@ -3,3 +3,4 @@ pandas
 tabula-py
 openpyxl
 PyPDF2
+pdfplumber

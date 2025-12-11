@@ -5,7 +5,7 @@ import tempfile
 import os
 import zipfile
 import re
-from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, MondelezExtractor, TABULA_AVAILABLE
+from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, MondelezExtractor, SilveiraExtractor, TABULA_AVAILABLE
 
 st.set_page_config(
     page_title="Conversor PDF para Excel",
@@ -47,6 +47,7 @@ if uploaded_files:
     opcoes_extracao = [
         "REDE BIZ (Pedidos TOTVS)",
         "Rede Biz - KAMEL",
+        "Silveira Supermercado",
         "PDFPlumber (recomendado)", 
         "Texto (extração inteligente)"
     ]
@@ -103,6 +104,8 @@ if uploaded_files:
                     extractor = RedeBizExtractor()
                 elif "KAMEL" in metodo_extracao:
                     extractor = MondelezExtractor()
+                elif "Silveira" in metodo_extracao:
+                    extractor = SilveiraExtractor()
                 elif "PDFPlumber" in metodo_extracao:
                     extractor = PdfPlumberExtractor()
                 elif "Texto" in metodo_extracao:

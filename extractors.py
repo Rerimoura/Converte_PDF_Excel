@@ -917,3 +917,132 @@ class MondelezExtractor(PdfExtractor):
             try: return float(val)
             except: return 0.0
         return val
+
+class SilveiraExtractor(PdfExtractor):
+    """Extract structured data from Silveira Supermercado purchase orders"""
+    
+    def extract(self, file_path):
+        try:
+            # Extract all text from PDF using PyPDF2 (works well for this format)
+            with open(file_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                texto_completo = ""
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        texto_completo += text + "\n"
+            
+            linhas = texto_completo.split('\n')
+            return self._process_silveira_text(linhas)
+        except Exception as e:
+            print(f"Error in SilveiraExtractor: {e}")
+            return []
+
+    def _process_silveira_text(self, linhas):
+        pedidos = []
+        produtos_list = []
+        
+        current_pedido = {
+            'Número do Pedido': '',
+            'Fornecedor': '',
+            'Cliente': 'SUPERMERCADO SILVEIRA LTDA', # Default likely, but let's try to find it
+            'Data Entrega': '',
+            'Data Emissão': '',
+            'Valor Total': ''
+        }
+        
+        # Regex patterns
+        # Pattern for product line based on debug output:
+        
+        for linha in linhas:
+            linha_limpa = linha.strip()
+            
+            if not linha_limpa:
+                continue
+
+            # Header Info
+            if 'Pedido:' in linha_limpa:
+                match = re.search(r'Pedido:\s*(\d+)', linha_limpa)
+                if match:
+                    current_pedido['Número do Pedido'] = match.group(1)
+            
+            if 'SUPERMERCADO SILVEIRA' in linha_limpa:
+                current_pedido['Cliente'] = 'SUPERMERCADO SILVEIRA LTDA'
+                
+            if 'Data Entrega:' in linha_limpa:
+                match = re.search(r'Data Entrega:\s*([\d\/]+)', linha_limpa)
+                if match:
+                    current_pedido['Data Entrega'] = match.group(1)
+                    
+            if 'Data Hora Emissão:' in linha_limpa:
+                 match = re.search(r'Emissão:\s*([\d\/]+)', linha_limpa)
+                 if match:
+                     current_pedido['Data Emissão'] = match.group(1)
+
+            # Valor total (footer)
+            if 'Total' in linha_limpa and '----------->' in linha_limpa:
+                 match = re.search(r'Total\s*-+>\s*([\d\.,]+)', linha_limpa)
+                 if match:
+                     current_pedido['Valor Total'] = match.group(1)
+
+            # Product Line Detection
+            # Regex: Start with digits, space, digits, space ... ends with digits (13-14 chars for EAN)
+            match_prod = re.search(r'^\d+\s+\d+\s+(.+?)\s+([A-Z]{2})\s+([\d\s,]+)\s+([\d,]+)\s+([\d,]+)\s+(\d+)$', linha_limpa)
+            
+            if match_prod:
+                desc = match_prod.group(1)
+                emb = match_prod.group(2)
+                qty_raw = match_prod.group(3) # "1 20,000" or "12 3,000"
+                
+                # Split qty_raw by space and take the last part as the actual quantity
+                qtde_parts = qty_raw.split()
+                qtde = qtde_parts[-1] if qtde_parts else '0'
+                
+                val_unit = match_prod.group(4)
+                val_total = match_prod.group(5)
+                ean = match_prod.group(6)
+                
+                # Supplier Code is the first number in the line
+                cod_forn = linha_limpa.split()[0]
+
+                prod = {
+                    'Número do Pedido': current_pedido['Número do Pedido'],
+                    'Código Fornecedor': cod_forn,
+                    'Descrição': desc.strip(),
+                    'Quantidade': qtde,
+                    'Embalagem': emb,
+                    'Valor Unit.': val_unit,
+                    'Valor Total': val_total,
+                    'EAN': ean
+                }
+                produtos_list.append(prod)
+
+        # Assemble DFS
+        dfs = []
+        if current_pedido['Número do Pedido']:
+            dfs.append(pd.DataFrame([current_pedido]))
+            
+        if produtos_list:
+            df_produtos = pd.DataFrame(produtos_list)
+            
+            # Converters
+            def conv_num(val):
+                if isinstance(val, str):
+                    val_clean = val.replace('.', '').replace(',', '.')
+                    try:
+                        return float(val_clean)
+                    except ValueError:
+                        return 0.0
+                return val
+
+            cols_float = ['Quantidade', 'Valor Unit.', 'Valor Total']
+            for col in cols_float:
+                if col in df_produtos.columns:
+                    df_produtos[col] = df_produtos[col].apply(conv_num)
+            
+            if 'EAN' in df_produtos.columns:
+                 df_produtos['EAN'] = pd.to_numeric(df_produtos['EAN'], errors='coerce').fillna(0).astype('int64')
+
+            dfs.append(df_produtos)
+            
+        return dfs

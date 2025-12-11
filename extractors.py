@@ -410,21 +410,74 @@ class RedeBizExtractor(PdfExtractor):
             
             # Detectar fim da seção de produtos
             # Só considera fim se tiver substantivos além de "TOTAIS" ou se for claramente fim
-            if in_produtos_section and ('TOTAIS' in linha_limpa and re.search(r'\d+,\d+', linha_limpa)):
-                # Salvar produto atual antes de encerrar (último produto da seção)
-                if current_produto and current_produto.get('Código Fornecedor'):
-                    produtos_list.append(current_produto.copy())
-                in_produtos_section = False
-                current_produto = None
-                continue
-            
-            if 'DADOS ADICIONAIS' in linha_limpa or 'ADVERT' in linha_limpa:
-                # Salvar produto atual antes de encerrar
-                if current_produto and current_produto.get('Código Fornecedor'):
-                    produtos_list.append(current_produto.copy())
-                in_produtos_section = False
-                current_produto = None
-                continue
+            if in_produtos_section:
+                if ('TOTAIS' in linha_limpa and re.search(r'\d+,\d+', linha_limpa)) or \
+                   ('DADOS ADICIONAIS' in linha_limpa) or \
+                   ('ADVERT' in linha_limpa):
+                    # Salvar último produto antes de fechar seção
+                    if current_produto and current_produto.get('Código Fornecedor'):
+                        produtos_list.append(current_produto.copy())
+                    in_produtos_section = False
+                    current_produto = None
+                    continue
+
+                # Processar linhas de produtos dentro da seção
+                # 1. Tentar capturar linha principal do produto
+                # Pattern: CodForn ... ValorTotal ... ValorUnit Qtde Emb Seq Descricao Ref
+                # Ex: 504251 ... 41,82 6,9700 6,00 UN 1 CONDIC DARLING 350ML CERAMIDAS 23959
+                # Regex flexível para capturar a estrutura num 
+                # (Cod) ... (ValorTot) space (ValorUnit) space (Qtde) space (Emb) space (Seq) space (Desc)
+                # Nota: Os 4 valores 0,00 entre Cod e ValorTot podem variar, então usamos .*? ou \s+[\d,]+\s+...
+                
+                # Match rigoroso para evitar falso positivo:
+                # Procura: Digitos (Cod) + Espaços + (Varios numeros com virgula) + Numero(Total) + Numero(Unit) + Numero(Qtde) + Emb(2 letras) + Seq + Desc
+                
+                # Regex simplificado focado nos campos finais que são consistentes
+                # Codigo Fornecedor está no inicio da sequencia de numeros importantes
+                # 504251 0,00 ...
+                match_prod = re.search(r'(\d+)\s+(?:[\d,]+\s+){4}([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+([A-Z]{2})\s+(\d+)\s+(.+)', linha_limpa)
+                
+                if match_prod:
+                    # Encontrou linha de produto -> Salvar anterior se existir
+                    if current_produto and current_produto.get('Código Fornecedor'):
+                        produtos_list.append(current_produto.copy())
+                    
+                    cod_forn = match_prod.group(1)
+                    val_total = match_prod.group(2)
+                    val_unit = match_prod.group(3)
+                    qtde = match_prod.group(4)
+                    emb = match_prod.group(5)
+                    seq = match_prod.group(6)
+                    descricao = match_prod.group(7).strip()
+                    
+                    # Remover código interno do final da descrição se houver (ex: ... CERAMIDAS 23959)
+                    # O código no final parece ser o mesmo ou relacionado, vamos manter na descrição por enquanto ou remover se o usuario quiser limpo
+                    # O usuario pediu "tabelas corretamente", então vamos manter fiel ao texto, mas talvez remover o Codigo interno duplicado?
+                    # No exemplo: 504251 (Forn) ... Desc ... 23959. São diferentes.
+                    # Vou manter na descrição.
+                    
+                    current_produto = {
+                        'Número do Pedido': current_pedido['Número do Pedido'],
+                        'Código Fornecedor': cod_forn,
+                        'Descrição': descricao,
+                        'Quantidade': qtde,
+                        'Embalagem': emb,
+                        'Valor Unit.': val_unit,
+                        'Valor Total': val_total,
+                        'Sequência': seq,
+                        'EAN': '' # Será preenchido na proxima linha se houver
+                    }
+                    continue
+                
+                # 2. Tentar capturar linha de EAN
+                # Ex: EANs: 7891024184271
+                if 'EANs:' in linha_limpa and current_produto:
+                    match_ean = re.search(r'EANs:\s*([\d,\s]+)', linha_limpa)
+                    if match_ean:
+                        eans = match_ean.group(1).replace(' ', '')
+                        # Se tiver virgula, pega o primeiro ou todos? O pandas vai tratar string.
+                        current_produto['EAN'] = eans
+                    continue
         
         # Salvar último pedido e produto
         if current_produto and current_produto.get('Código Fornecedor'):
@@ -455,7 +508,7 @@ class RedeBizExtractor(PdfExtractor):
                     return val
 
                 # Aplicar conversão em colunas de valores (float)
-                cols_valor = ['Quantidade', 'Valor Unit.']
+                cols_valor = ['Quantidade', 'Valor Unit.', 'Valor Total']
                 for col in cols_valor:
                     if col in df_produtos.columns:
                         df_produtos[col] = df_produtos[col].apply(conv_num)

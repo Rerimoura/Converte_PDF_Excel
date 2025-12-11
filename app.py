@@ -5,7 +5,7 @@ import tempfile
 import os
 import zipfile
 import re
-from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, TABULA_AVAILABLE
+from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, MondelezExtractor, TABULA_AVAILABLE
 
 st.set_page_config(
     page_title="Conversor PDF para Excel",
@@ -46,6 +46,7 @@ if uploaded_files:
     
     opcoes_extracao = [
         "REDE BIZ (Pedidos TOTVS)",
+        "Rede Biz - KAMEL",
         "PDFPlumber (recomendado)", 
         "Texto (extração inteligente)"
     ]
@@ -100,6 +101,8 @@ if uploaded_files:
                 
                 if "REDE BIZ" in metodo_extracao:
                     extractor = RedeBizExtractor()
+                elif "KAMEL" in metodo_extracao:
+                    extractor = MondelezExtractor()
                 elif "PDFPlumber" in metodo_extracao:
                     extractor = PdfPlumberExtractor()
                 elif "Texto" in metodo_extracao:
@@ -116,6 +119,10 @@ if uploaded_files:
             
             if not tabelas or len(tabelas) == 0:
                 st.warning(f"⚠️ Nenhuma tabela foi encontrada em {uploaded_file.name}")
+                if hasattr(extractor, 'debug_text') and extractor.debug_text:
+                    with st.expander("🔍 Debug: Ver texto extraído do PDF"):
+                        st.text_area("Conteúdo bruto:", extractor.debug_text, height=300)
+                        st.info("Copie este texto e envie para o desenvolvedor adaptar o extrator.")
                 st.info("💡 Dica: Tente outro método de extração.")
                 continue
             
@@ -138,6 +145,13 @@ if uploaded_files:
                         except:
                             pass
                     
+                    # Converter EAN para número se existir
+                    if 'EAN' in df.columns:
+                        # Forçar conversão para números, erros viram NaN (que o Excel trata como vazio)
+                        # Mas se quiser manter zeros à esquerda, teria que ser string.
+                        # O usuário PEDIU para ser número.
+                        df['EAN'] = pd.to_numeric(df['EAN'], errors='coerce')
+
                     # Escrever no Excel
                     sheet_name = f'Tabela {i}'
                     # Garantir que sheet_name não exceda 31 chars

@@ -547,6 +547,18 @@ class MondelezExtractor(PdfExtractor):
         desc_words = re.findall(r'\b[A-Z]{3,}\b', linha)
         desc = ' '.join(desc_words) if desc_words else ''
         
+        # Tentar extrair embalagem (ex: CX 144, UN, etc)
+        # Procura por CX, UN, PC, KG, LT seguidos ou não de número
+        emb_match = re.search(r'\b(CX|UN|PC|KG|LT)(?:\s+(\d+))?\b', linha)
+        emb_str = "UN" # Default
+        if emb_match:
+            tipo = emb_match.group(1)
+            qtd_emb = emb_match.group(2)
+            if qtd_emb:
+                emb_str = f"{tipo} {qtd_emb}"
+            else:
+                emb_str = tipo
+        
         # Remover TODAS as letras (exceto da descrição que já salvamos)
         only_digits_and_spaces = re.sub(r'[a-zA-Z\.]', ' ', linha)
         
@@ -564,7 +576,8 @@ class MondelezExtractor(PdfExtractor):
                 ean = num
             elif len(num) == 6 and not code:  # Código tem 6 dígitos
                 code = num
-            elif len(num) == 2 and not qty:  # Quantidade 2 dígitos (48)
+            elif len(num) == 2 and not qty and num != emb_match.group(2) if emb_match and emb_match.group(2) else True:  
+                # Quantidade 2 dígitos (48). Cuidado para não pegar o 144 da caixa como quantidade
                 qty = num
             elif len(num) == 1 and not qty and int(num) > 0: # Qtde pode ser 1 dígito (ex: 6 UN)
                 qty = num
@@ -592,10 +605,10 @@ class MondelezExtractor(PdfExtractor):
         if ean and code and desc and qty:
             # Se temos valores, usar; senão, usar placeholders
             if len(valores) >= 2:
-                reconstructed = f"{ean} {code} {desc} {qty} UN 1 UN 0,00 0,00 {valores[-2]} {valores[-2]} {valores[-1]}"
+                reconstructed = f"{ean} {code} {desc} {qty} {emb_str} 1 UN 0,00 0,00 {valores[-2]} {valores[-2]} {valores[-1]}"
             else:
                 # Fallback: usar os próprios números encontrados
-                reconstructed = f"{ean} {code} {desc} {qty} UN 1 UN 0,00 0,00 10,00 10,00 100,00"
+                reconstructed = f"{ean} {code} {desc} {qty} {emb_str} 1 UN 0,00 0,00 10,00 10,00 100,00"
             return reconstructed
         
         # Se não conseguiu reconstruir, retorna original
@@ -807,11 +820,12 @@ class MondelezExtractor(PdfExtractor):
                 # Tentativa de match MULTI-FORMATO GENÉRICO
                 # Captura 1 ou 2 números no início e decide quem é EAN e quem é Código
                 # Regex Smart: âncora ^, grupo 1 (num1), grupo 2 opcional (num2), resto
-                regex_smart = r'^\s*(\d+)\s+(?:(\d+)\s+)?(.+?)\s+(\d+)\s+(UN|CX|PC|KG|LT).*?(\d+,\d+)\s+[\d,\.]+\s+([\d,\.]+)$'
+                # Atualizado para capturar numero na embalagem (CX 144)
+                regex_smart = r'^\s*(\d+)\s+(?:(\d+)\s+)?(.+?)\s+(\d+)\s+((?:UN|CX|PC|KG|LT)(?:\s+\d+)?).*?(\d+,\d+)\s+[\d,\.]+\s+([\d,\.]+)$'
                 match_smart = re.search(regex_smart, linha_limpa_processada)
 
                 # Formato B (Antigo/Rede Biz padrão): Cod ... Price ... Qty ... Desc
-                match_format_b = re.search(r'^(\d{6})\s+.*?\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+(UN|CX|PC|KG|LT)\s+(\d+)\s+(.+)$', linha_limpa_processada)
+                match_format_b = re.search(r'^(\d{6})\s+.*?\s+([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)\s+((?:UN|CX|PC|KG|LT)(?:\s+\d+)?)\s+(\d+)\s+(.+)$', linha_limpa_processada)
 
                 if match_smart:
                     in_produtos_section = True 
@@ -1044,5 +1058,413 @@ class SilveiraExtractor(PdfExtractor):
                  df_produtos['EAN'] = pd.to_numeric(df_produtos['EAN'], errors='coerce').fillna(0).astype('int64')
 
             dfs.append(df_produtos)
+            
+        return dfs
+
+class BernardaoExtractor(PdfExtractor):
+    """Extract structured data from Bernardao Supermercado purchase orders"""
+    
+    def extract(self, file_path):
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                texto_completo = ""
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        texto_completo += text + "\n"
+            
+            linhas = texto_completo.split('\n')
+            return self._process_bernardao_text(linhas)
+        except Exception as e:
+            print(f"Error in BernardaoExtractor: {e}")
+            return []
+
+    def _process_bernardao_text(self, linhas):
+        pedidos = []
+        produtos_list = []
+        
+        current_pedido = None
+        current_produto = None
+        
+        for linha in linhas:
+            linha_limpa = linha.strip()
+            if not linha_limpa:
+                continue
+                
+            # New Order Detection
+            if 'PEDIDO DE' in linha_limpa and '/L' in linha_limpa:
+                match = re.search(r'-\s*(\d+)\s*/L', linha_limpa)
+                if match:
+                    new_pedido_id = match.group(1)
+                    
+                    # If same order continues on next page, don't reset
+                    if current_pedido and current_pedido['Número do Pedido'] == new_pedido_id:
+                        continue
+                    
+                    # Save previous order
+                    if current_pedido:
+                        pedidos.append(current_pedido)
+                    
+                    current_pedido = {
+                        'Número do Pedido': new_pedido_id,
+                        'Fornecedor': '',
+                        'Cliente': 'SUPERMERCADO BERNARDAO LTDA',
+                        'Data Entrega': '',
+                        'Data Emissão': '',
+                        'Valor Total': ''
+                    }
+                    continue
+
+            if not current_pedido:
+                continue
+
+            # Header Metadata
+            if 'Data da emissão' in linha_limpa:
+                 match = re.search(r'(\d{2}/\d{2}/\d{4})', linha_limpa)
+                 if match: current_pedido['Data Emissão'] = match.group(1)
+            
+            if 'Valor total do pedido' in linha_limpa:
+                 match = re.search(r'([\d\.,]+)\s+Valor total', linha_limpa)
+                 if match: current_pedido['Valor Total'] = match.group(1)
+
+            # CNPJ Parsing
+            # Pattern: CNPJ -86 18.468.199/0013
+            if 'CNPJ' in linha_limpa:
+                 match = re.search(r'CNPJ\s*-(\d{2})\s+(\d{2}\.\d{3}\.\d{3}/\d{4})', linha_limpa)
+                 if match:
+                     # Reconstruct standard format: 18.468.199/0013-86
+                     cnpj_root = match.group(2)
+                     cnpj_digit = match.group(1)
+                     current_pedido['CNPJ Cliente'] = f"{cnpj_root}-{cnpj_digit}"
+            
+            # Product Parsing
+            # Layout appears to be: Code Seq Desc EmbType EmbQty Qty ValUnit ...
+            # We look for the "Pivot": EmbType EmbQty Qty ValUnit
+            # Ex: CX 315 1,00 431,5500
+            regex_pivot = r'([A-Z]{2})\s+(\d+)\s+([\d\.,]+)\s+([\d\.,]+)'
+            match_pivot = re.search(regex_pivot, linha_limpa)
+
+            if match_pivot:
+                # Pivots
+                emb_type = match_pivot.group(1)
+                emb_count = match_pivot.group(2)
+                qtde = match_pivot.group(3)
+                val_unit = match_pivot.group(4)
+                
+                emb = f"{emb_type} {emb_count}"
+                
+                # Split line to get Code and Desc (Pre-Pivot)
+                # content before the match
+                start_index = match_pivot.start()
+                prefix = linha_limpa[:start_index].strip()
+                
+                # Prefix: Code Seq Desc
+                # Ex: "0000078938854 13756 BALA HALLS"
+                tokens = prefix.split()
+                if len(tokens) >= 2:
+                    # Assume first is code, or maybe second?
+                    # Header says: Cod Forn | Seq
+                    # Likely tokens[0] is Code Forn.
+                    # But sometimes tokens[0] is huge (EAN).
+                    # Let's take tokens[0] as Code.
+                    code_forn = tokens[1] # Using Seq as code? Or token 0?
+                    # Let's capture the 'Seq' (token 1) as the internal code usually used 
+                    # OR just take the whole prefix minus digits?
+                    # Safer: First token is code. Remaining is desc.
+                    # Wait, Line 19: 0000078938854 13756 BALA HALLS
+                    # Usually "13756" is the short code users want.
+                    # Let's try to find the 5-6 digit one if possible?
+                    # For now, let's take tokens[1] if available, else tokens[0].
+                    if len(tokens[1]) <= 6 and len(tokens[0]) > 8:
+                         code_forn = tokens[1]
+                         desc_start = " ".join(tokens[2:])
+                    else:
+                         code_forn = tokens[0]
+                         desc_start = " ".join(tokens[1:])
+                elif len(tokens) == 1:
+                    code_forn = tokens[0]
+                    desc_start = ""
+                else:
+                    code_forn = ""
+                    desc_start = ""
+
+                # Start new product object
+                current_produto = {
+                    'Número do Pedido': current_pedido['Número do Pedido'],
+                    'Código Fornecedor': code_forn,
+                    'Descrição': desc_start,  # Accumulator
+                    'Quantidade': qtde,
+                    'Embalagem': emb,
+                    'Valor Unit.': val_unit,
+                    'Valor Total': '', # Calculate or extract?
+                    'EAN': ''
+                }
+                
+                # Extract Total Value?
+                # It usually follows ValUnit. 
+                # Ex: 431,5500 431,55 ...
+                # We can grab it from raw line after qtde/unit if needed, but Unit * Qty is fine.
+                # Actually, capturing original total is better.
+                # Regex match ends at group 4 (ValUnit).
+                # Line continues: 431,55 431,55 ...
+                rest_of_line = linha_limpa[match_pivot.end():].strip()
+                parts = rest_of_line.split()
+                if parts:
+                    current_produto['Valor Total'] = parts[0]
+                
+                produtos_list.append(current_produto)
+                continue
+                
+            # Continuation or EANs
+            if current_produto:
+                if 'EANs:' in linha_limpa:
+                    match_ean = re.search(r'EANs:\s*([\d,\s]+)', linha_limpa)
+                    if match_ean:
+                        eans = match_ean.group(1).replace(' ', '').split(',')
+                        if eans:
+                            current_produto['EAN'] = eans[0]
+                    
+                    current_produto = None # Done with this product
+                    continue
+                
+                # If not EANs, and we have a current product, it might be a description continuation
+                if 'Total Geral:' in linha_limpa or 'Vencimentos' in linha_limpa:
+                    current_produto = None
+                    continue
+                
+                # Ignore headers/footers in description (keep current_produto active)
+                ignore_patterns = ['TOTVS', '--- Page', 'PEDIDO DE', 'FORNECEDOR', 'DADOS PARA', 'R. Social', 'Endereço', 'Bairro', 'Cidade', 'Cep', 'Transportador', 'Inscrição Estadual']
+                if any(pat in linha_limpa for pat in ignore_patterns):
+                    continue
+
+                # Append to description
+                current_produto['Descrição'] += " " + linha_limpa
+
+
+        # Save last order
+        if current_pedido:
+            pedidos.append(current_pedido)
+
+        # Assemble DFS
+        dfs = []
+        if pedidos:
+            dfs.append(pd.DataFrame(pedidos))
+            
+        if produtos_list:
+            df_produtos = pd.DataFrame(produtos_list)
+            
+            # Converters
+            def conv_num(val):
+                if isinstance(val, str):
+                    val_clean = val.replace('.', '').replace(',', '.')
+                    try:
+                        return float(val_clean)
+                    except ValueError:
+                        return 0.0
+                return val
+
+            cols_float = ['Quantidade', 'Valor Unit.', 'Valor Total']
+            for col in cols_float:
+                if col in df_produtos.columns:
+                    df_produtos[col] = df_produtos[col].apply(conv_num)
+            
+            if 'EAN' in df_produtos.columns:
+                 df_produtos['EAN'] = pd.to_numeric(df_produtos['EAN'], errors='coerce').fillna(0).astype('int64')
+
+            dfs.append(df_produtos)
+            
+        return dfs
+
+class TresIrmaosExtractor(PdfExtractor):
+    """Extrator para pedidos do Supermercado 3 Irmãos"""
+    
+    def extract(self, file_path):
+        try:
+            texto_completo = ""
+            with open(file_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        texto_completo += text + "\n"
+            
+            linhas = texto_completo.split('\n')
+            return self._process_text(linhas)
+        except Exception as e:
+            print(f"Erro no TresIrmaosExtractor: {e}")
+            return []
+            
+    def _process_text(self, linhas):
+        pedidos = []
+        produtos_list = []
+        
+        current_pedido = None
+        
+        # Buffer de linhas para lookback
+        line_buffer = []
+        BUFFER_SIZE = 15
+        
+        for i, line in enumerate(linhas):
+            linha = line.strip()
+            if not linha:
+                continue
+            
+            # Atualizar buffer
+            line_buffer.append(linha)
+            if len(line_buffer) > BUFFER_SIZE:
+                line_buffer.pop(0)
+            
+            # --- Header Detection ---
+            # Ordem de Compra Nº 38709
+            if 'Ordem de Compra' in linha:
+                match = re.search(r'Ordem de Compra N. (\d+)', linha.replace('º', '.').replace('°', '.'))
+                if match:
+                    order_num = match.group(1)
+                    
+                    if current_pedido and current_pedido.get('Ordem de Compra') != order_num:
+                       pedidos.append(current_pedido)
+                       current_pedido = None
+                    
+                    if not current_pedido:
+                        current_pedido = {
+                            'Ordem de Compra': order_num,
+                            'CNPJ': '',
+                            'Cidade': '',
+                            'Valor Total': ''
+                        }
+            
+            if current_pedido:
+                # CNPJ
+                if not current_pedido['CNPJ'] and 'CNPJ:' in linha:
+                     # Ex: 01.447.141/0003-81 CNPJ:Empresa Emitente: 4
+                     match = re.search(r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', linha)
+                     if match:
+                         current_pedido['CNPJ'] = match.group(1)
+
+                # Cidade
+                if not current_pedido['Cidade'] and 'Cidade:' in linha:
+                    # Ex: CEP38290-000 CARNEIRINHO MG Cidade:Planilha
+                    # Ou: ... CARNEIRINHO MG Cidade:
+                    # Procura texto antes de 'Cidade:' que pareça uma cidade/UF
+                    # Mas o texto extraido do PDF coloca Cidade: DEPOIS do valor as vezes?
+                    # Line 6: CEP38290-000 CARNEIRINHO MG Cidade:Planilha...
+                    # Regex: Captura texto entre CEP (ou inicio) e Cidade:
+                    match = re.search(r'CEP\d{5}-\d{3}\s+(.+?)\s+Cidade:', linha)
+                    if match:
+                         current_pedido['Cidade'] = match.group(1).strip()
+
+                # Tenta capturar Total Geral
+                if 'Total Geral:' in linha or 'Total:' in linha:
+                     # Ex: ,000 8.492,63 1.023,000 Total Geral:
+                     # Group 1: 8.492,63 (Value), Group 2: 1.023,000 (Qty)
+                     match = re.search(r'([\d\.,]+)\s+([\d\.,]+)\s+Total Geral:', linha)
+                     if match:
+                         current_pedido['Valor Total'] = match.group(1)
+                     else:
+                         # Fallback: Capture last number if explicit "Total:" exists (Page 6: 8.495,20 Total:)
+                         match_simple = re.search(r'([\d\.,]+)\s+Total:', linha)
+                         if match_simple:
+                             current_pedido['Valor Total'] = match_simple.group(1)
+
+            # --- Product Detection (Anchor Line) ---
+            # Regex Anchor
+            regex_anchor = r'^([\d\.,]+)\s+,000\s+([\d\.,]+)\s+([\d\.,]+)(.*)$'
+            match_anchor = re.search(regex_anchor, linha)
+            
+            if match_anchor and current_pedido:
+                val_unit = match_anchor.group(1)
+                val_total = match_anchor.group(2)
+                qtde = match_anchor.group(3)
+                desc_start = match_anchor.group(4)
+                
+                # Lookback for Code and EAN/Pkg
+                # O buffer tem a linha atual no final [-1]
+                code = ''
+                ean = ''
+                cod_interno_suffix = ''
+                
+                # Buffer Reverso (sem a linha atual)
+                rev_buffer = list(reversed(line_buffer[:-1]))
+                
+                for idx, prev_line in enumerate(rev_buffer):
+                    if idx > 8: break # Não olhar muito longe
+                    
+                    # Teste Code: ,000000(\d+) isolado
+                    if ',000000' in prev_line and not re.search(r'[A-Z]', prev_line):
+                         match_code = re.search(r',000000(\d+)', prev_line)
+                         if match_code and not code:
+                             code = match_code.group(1)
+                    
+                    # Teste EAN/Emb: ,000000(UN|CX|...)
+                    match_ean = re.search(r',000000(UN|CX|PT|DZ|PC|KG|LT)(?:\s+)?(.+)', prev_line)
+                    if match_ean and not ean:
+                        full_num = match_ean.group(2).replace(' ', '')
+                        if len(full_num) > 6:
+                            # Split: last 6 are Internal Code, rest is EAN.
+                            part_rest = full_num[-6:] # Last 6
+                            part_ean = full_num[:-6]  # Start to -6
+                            
+                            ean = part_ean
+                            if not cod_interno_suffix:
+                                cod_interno_suffix = part_rest
+                        else:
+                            ean = full_num # Fallback
+
+                # Descrição Lookahead
+                full_desc = desc_start.strip()
+                offset = 1
+                while i + offset < len(linhas):
+                    next_line = linhas[i+offset].strip()
+                    if re.match(r'^[\d\.,]+$', next_line): 
+                        break
+                    if '--- Page' in next_line or 'Page' in next_line:
+                        break
+                    if 'Supermercado' in next_line:
+                        break
+                    if 'Total Geral:' in next_line or 'Vencimentos' in next_line or 'Total:' in next_line:
+                        break
+                        
+                    full_desc += " " + next_line
+                    offset += 1
+
+                produtos_list.append({
+                    'Ordem de Compra': current_pedido['Ordem de Compra'],
+                    'Código': code,
+                    'Cód. Interno': cod_interno_suffix,
+                    'Código de barras': ean,
+                    'Descrição': full_desc,
+                    'Valor': val_unit,
+                    'Quantidade': qtde,
+                    'Valor Total': val_total
+                })
+        
+        if current_pedido:
+            pedidos.append(current_pedido)
+            
+        dfs = []
+        if pedidos:
+            dfs.append(pd.DataFrame(pedidos))
+            
+        if produtos_list:
+            df_prod = pd.DataFrame(produtos_list)
+             # Converters
+            def conv_num(val):
+                if isinstance(val, str):
+                    val_clean = val.replace('.', '').replace(',', '.')
+                    try:
+                        return float(val_clean)
+                    except ValueError:
+                        return 0.0
+                return val
+
+            cols_float = ['Quantidade', 'Valor', 'Valor Total']
+            for col in cols_float:
+                if col in df_prod.columns:
+                    df_prod[col] = df_prod[col].apply(conv_num)
+                    
+            if 'Código de barras' in df_prod.columns:
+                 df_prod['Código de barras'] = pd.to_numeric(df_prod['Código de barras'], errors='coerce').fillna(0).astype('int64')
+
+            dfs.append(df_prod)
             
         return dfs

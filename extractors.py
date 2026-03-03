@@ -464,7 +464,7 @@ class RedeBizExtractor(PdfExtractor):
                         'Embalagem': emb,
                         'Valor Unit.': val_unit,
                         'Valor Total': val_total,
-                        'Sequência': seq,
+                        'Qtde CX': seq,
                         'EAN': '' # Será preenchido na proxima linha se houver
                     }
                     continue
@@ -514,7 +514,7 @@ class RedeBizExtractor(PdfExtractor):
                         df_produtos[col] = df_produtos[col].apply(conv_num)
                 
                 # Converter Identificadores para inteiro
-                cols_int = ['Código Fornecedor', 'EAN']
+                cols_int = ['Código Fornecedor', 'EAN', 'Qtde CX']
                 for col in cols_int:
                     if col in df_produtos.columns:
                         # Remove caracteres não numéricos antes de converter (ex: EANs múltiplos separados por vírgula)
@@ -522,10 +522,6 @@ class RedeBizExtractor(PdfExtractor):
                         # Aqui vamos usar pd.to_numeric com coerce, que transforma erro em NaN -> 0
                         # Para garantir que o formato seja NUMÉRICO no Excel, convertemos para float ou int64 explícito
                         df_produtos[col] = pd.to_numeric(df_produtos[col], errors='coerce').fillna(0).astype('int64')
-                
-                # Remover coluna Sequência se existir (não é necessária na saída final)
-                if 'Sequência' in df_produtos.columns:
-                    df_produtos = df_produtos.drop(columns=['Sequência'])
             
             dfs.append(df_produtos)
         

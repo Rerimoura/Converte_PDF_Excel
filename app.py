@@ -5,7 +5,7 @@ import tempfile
 import os
 import zipfile
 import re
-from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, MondelezExtractor, SilveiraExtractor, BernardaoExtractor, TresIrmaosExtractor, TABULA_AVAILABLE
+from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, MondelezExtractor, SilveiraExtractor, BernardaoExtractor, TresIrmaosExtractor, RedeLucasExtractor, SupermaxiExtractor, TABULA_AVAILABLE
 
 st.set_page_config(
     page_title="Conversor PDF para Excel",
@@ -50,6 +50,8 @@ if uploaded_files:
         "Silveira Supermercado",
         "Bernardão Supermercado",
         "3 Irmãos Supermercado",
+        "REDE LUCAS",
+        "SUPERMAXI",
         "PDFPlumber (recomendado)", 
         "Texto (extração inteligente)"
     ]
@@ -112,6 +114,10 @@ if uploaded_files:
                     extractor = BernardaoExtractor()
                 elif "3 Irmãos" in metodo_extracao:
                     extractor = TresIrmaosExtractor()
+                elif "REDE LUCAS" in metodo_extracao:
+                    extractor = RedeLucasExtractor()
+                elif "SUPERMAXI" in metodo_extracao:
+                    extractor = SupermaxiExtractor()
                 elif "PDFPlumber" in metodo_extracao:
                     extractor = PdfPlumberExtractor()
                 elif "Texto" in metodo_extracao:
@@ -139,6 +145,7 @@ if uploaded_files:
             
             # Criar Excel em memória
             output = BytesIO()
+            dfs_to_merge = []
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 tabelas_validas = 0
                 
@@ -161,6 +168,11 @@ if uploaded_files:
                         # O usuário PEDIU para ser número.
                         df['EAN'] = pd.to_numeric(df['EAN'], errors='coerce')
 
+                    # Guardar dataframe para mesclar depois
+                    df_merge = df.copy()
+                    df_merge.insert(0, 'Arquivo Origem', uploaded_file.name)
+                    dfs_to_merge.append(df_merge)
+
                     # Escrever no Excel
                     sheet_name = f'Tabela {i}'
                     # Garantir que sheet_name não exceda 31 chars
@@ -181,7 +193,8 @@ if uploaded_files:
                 resultados.append({
                     'nome': uploaded_file.name.replace('.pdf', ''),
                     'dados': output.getvalue(),
-                    'tabelas': tabelas_validas
+                    'tabelas': tabelas_validas,
+                    'dataframes': dfs_to_merge
                 })
                 
                 # Botão de download individual
@@ -226,15 +239,53 @@ if uploaded_files:
         
         zip_buffer.seek(0)
         
-        col_x, col_y, col_z = st.columns([1, 2, 1])
-        with col_y:
-            st.download_button(
-                label=f"📦 Baixar todos ({len(resultados)} arquivos) em ZIP",
-                data=zip_buffer.getvalue(),
-                file_name="tabelas_convertidas.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
+        # Mesclar dataframes
+        excel_mesclado_buffer = BytesIO()
+        todos_dfs = []
+        for r in resultados:
+            if 'dataframes' in r and r['dataframes']:
+                todos_dfs.extend(r['dataframes'])
+        
+        has_merged = False
+        if todos_dfs:
+            try:
+                df_mesclado = pd.concat(todos_dfs, ignore_index=True)
+                with pd.ExcelWriter(excel_mesclado_buffer, engine='openpyxl') as writer:
+                    df_mesclado.to_excel(writer, sheet_name='Pedidos Mesclados', index=False)
+                excel_mesclado_buffer.seek(0)
+                has_merged = True
+            except Exception as e:
+                st.error(f"Erro ao mesclar tabelas: {e}")
+                has_merged = False
+
+        if has_merged:
+            col_x, col_y = st.columns(2)
+            with col_x:
+                st.download_button(
+                    label=f"📦 Baixar todos ({len(resultados)} arquivos) em ZIP",
+                    data=zip_buffer.getvalue(),
+                    file_name="tabelas_convertidas.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
+            with col_y:
+                st.download_button(
+                    label=f"🔗 Mesclar todos em um único Excel",
+                    data=excel_mesclado_buffer.getvalue(),
+                    file_name="todas_tabelas_mescladas.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        else:
+            col_x, col_y, col_z = st.columns([1, 2, 1])
+            with col_y:
+                st.download_button(
+                    label=f"📦 Baixar todos ({len(resultados)} arquivos) em ZIP",
+                    data=zip_buffer.getvalue(),
+                    file_name="tabelas_convertidas.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
 
 else:
     # Instruções quando nenhum arquivo foi carregado

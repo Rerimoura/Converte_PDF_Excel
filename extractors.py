@@ -1464,3 +1464,146 @@ class TresIrmaosExtractor(PdfExtractor):
             dfs.append(df_prod)
             
         return dfs
+
+class RedeLucasExtractor(PdfExtractor):
+    """Extrator especifico para formato REDE LUCAS"""
+    def extract(self, file_path):
+        tabelas = []
+        cnpj_loja = ""
+        cabecalho = [
+            'Código', 'Cod Forn', 'Cod Barras', 'Descrição', 'Marca', 
+            'Qtde', 'Emb', 'Emb Quant', 'Pr Unit', 'Pr Emb', 'Vl Total'
+        ]
+        
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                # Encontrar o CNPJ da Loja no texto
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        match = re.search(r'Empresa:[\s\S]*?CNPJ:\s*([\d\.\/\-]+)', text)
+                        if match:
+                            cnpj_loja = match.group(1)
+                            break
+                            
+                for i, page in enumerate(pdf.pages, start=1):
+                    tables = page.extract_tables()
+                    for j, table in enumerate(tables, start=1):
+                        if table:
+                            cleaned_table = []
+                            for row in table:
+                                cleaned_row = [str(cell).strip() if cell is not None else "" for cell in row]
+                                if any(c for c in cleaned_row):
+                                    cleaned_table.append(cleaned_row)
+                            
+                            if len(cleaned_table) > 0 and len(cleaned_table[0]) >= 8:
+                                is_header = False
+                                first_row_text = "".join(cleaned_table[0]).upper()
+                                if "CÓDIGO" in first_row_text or "COD FORN" in first_row_text or "DESCRIÇÃO" in first_row_text or "COD" in first_row_text:
+                                    is_header = True
+                                
+                                dados = cleaned_table[1:] if is_header else cleaned_table
+                                if not dados: continue
+                                
+                                df = pd.DataFrame(dados)
+                                
+                                # Limpa colunas vazias
+                                while len(df.columns) > len(cabecalho) and (df[df.columns[-1]] == '').all():
+                                    df = df.iloc[:, :-1]
+                                    
+                                # Limpa se o df virou apenas vazio
+                                if df.empty: continue
+                                # Remove linha onde todos sao vazios
+                                df = df.dropna(how='all')
+                                
+                                colunas_dinamico = cabecalho.copy()
+                                num_cols = len(df.columns)
+                                if num_cols > len(colunas_dinamico):
+                                    for k in range(len(colunas_dinamico), num_cols):
+                                        colunas_dinamico.append(f"Coluna {k+1}")
+                                elif num_cols < len(colunas_dinamico):
+                                    colunas_dinamico = colunas_dinamico[:num_cols]
+                                    
+                                df.columns = colunas_dinamico
+                                df['CNPJ da Loja'] = cnpj_loja
+                                tabelas.append(df)
+        except Exception as e:
+            print(f"Error in RedeLucasExtractor: {e}")
+        
+        # Consolidar as tabelas num unico dataframe para não separar as paginas
+        if tabelas:
+            df_final = pd.concat(tabelas, ignore_index=True)
+            return [df_final]
+        return []
+
+class SupermaxiExtractor(PdfExtractor):
+    """Extrator especifico para formato SUPERMAXI"""
+    def extract(self, file_path):
+        tabelas = []
+        cnpj_loja = ""
+        cabecalho = [
+            'Código', 'Cod Barras', 'Cod Forn', 'Descrição', 'Qtde', 
+            'Emb', 'Emb Quant', 'Bruto Emb', 'Bruto Unit', 'Pr Unit', 
+            'Bruto Total', 'ST', 'IPI', 'Desc', 'Verba', 'Paletes', 'Peso Tot'
+        ]
+        
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                # Encontrar o CNPJ da Loja no texto
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        match = re.search(r'Empresa:[\s\S]*?CNPJ:\s*([\d\.\/\-]+)', text)
+                        if match:
+                            cnpj_loja = match.group(1)
+                            break
+                            
+                for i, page in enumerate(pdf.pages, start=1):
+                    tables = page.extract_tables()
+                    for j, table in enumerate(tables, start=1):
+                        if table:
+                            cleaned_table = []
+                            for row in table:
+                                cleaned_row = [str(cell).strip() if cell is not None else "" for cell in row]
+                                if any(c for c in cleaned_row):
+                                    cleaned_table.append(cleaned_row)
+                            
+                            if len(cleaned_table) > 0 and len(cleaned_table[0]) >= 10:
+                                is_header = False
+                                first_row_text = "".join(cleaned_table[0]).upper()
+                                if "CÓDIGO" in first_row_text or "COD FORN" in first_row_text or "DESCRIÇÃO" in first_row_text or "COD" in first_row_text:
+                                    is_header = True
+                                
+                                dados = cleaned_table[1:] if is_header else cleaned_table
+                                if not dados: continue
+                                
+                                df = pd.DataFrame(dados)
+                                
+                                # Limpa colunas vazias
+                                while len(df.columns) > len(cabecalho) and (df[df.columns[-1]] == '').all():
+                                    df = df.iloc[:, :-1]
+                                    
+                                # Limpa se o df virou apenas vazio
+                                if df.empty: continue
+                                # Remove linha onde todos sao vazios
+                                df = df.dropna(how='all')
+                                
+                                colunas_dinamico = cabecalho.copy()
+                                num_cols = len(df.columns)
+                                if num_cols > len(colunas_dinamico):
+                                    for k in range(len(colunas_dinamico), num_cols):
+                                        colunas_dinamico.append(f"Coluna {k+1}")
+                                elif num_cols < len(colunas_dinamico):
+                                    colunas_dinamico = colunas_dinamico[:num_cols]
+                                    
+                                df.columns = colunas_dinamico
+                                df['CNPJ da Loja'] = cnpj_loja
+                                tabelas.append(df)
+        except Exception as e:
+            print(f"Error in SupermaxiExtractor: {e}")
+        
+        # Consolidar as tabelas num unico dataframe para não separar as paginas
+        if tabelas:
+            df_final = pd.concat(tabelas, ignore_index=True)
+            return [df_final]
+        return []

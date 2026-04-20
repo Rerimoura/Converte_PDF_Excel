@@ -1607,3 +1607,342 @@ class SupermaxiExtractor(PdfExtractor):
             df_final = pd.concat(tabelas, ignore_index=True)
             return [df_final]
         return []
+
+class KamelExtractor(PdfExtractor):
+    """Extrator específico para Pedido de Compra KAMEL.
+
+    Foi identificado que a extração tabular do pdfplumber quebrava números com vírgula
+    (ex: 13,04 virava 1 e 3,04 em colunas separadas) devido ao layout do PDF.
+    A solução robusta é utilizar extração de TEXTO PURO via Expressões Regulares (Regex).
+    """
+
+    CABECALHO_PRODUTO = [
+        'EAN', 'Cód Forn', 'Descrição',
+        'Qtde', 'Emb', 'Emb Qtd',
+        'Desco', 'Bonif',
+        'Pr. Unit', 'Pr. Emb', 'Vlr. Total'
+    ]
+
+    # Expressão Regular para parsear a linha de produto
+    # Exemplo: 7622300847753 208422 TRIDENT 14S MELANCIA 25,2G 14 DP12 UN 0,000,000 5,42 65,09 911,27
+    # Exemplo sem cod: 7622210573452 TRIDENT X 14S TUTTI FRUTTI 25,2G 14 DP12 UN 0,000,000 5,42 65,09 911,27
+    _RE_PRODUTO = re.compile(
+        r'^(\d{8,14})\s+'                  # 1- EAN
+        r'(?:(\d{4,8})\s+)?'               # 2- Cód Forn (Opcional)
+        r'(.+?)\s+'                         # 3- Descrição
+        r'(?:(?<=\s)|(?<=[A-Z]))(\d+)\s+' # 4- Qtde
+        r'([A-Z]+)\s*(\d+)\s+'            # 5- Emb (CX/DP) e 6- EmbQtd (12/14)
+        r'(?:UN|PC|PT|CX|DP|FD|KG|CXS|DPS|UNS|PCT|PCTS)\s+' # UNidade (Descartada)
+        r'([\d,]+\s*(?:[\d,]+)?)\s+'       # 7- Desconto e Bonif (0,000,000 ou 0,00 0,000)
+        r'([\d\.,]+)\s+([\d\.,]+)\s+([\d\.,]+)$' # 8- Pr.Unit, 9- Pr.Emb, 10- Vlr.Total
+    )
+
+    def _extrair_cabecalho(self, texto_pagina):
+        """Extrai metadados do cabeçalho da página."""
+        info = {
+            'Nº Pedido': '',
+            'CNPJ': '',
+            'Razão Social': '',
+            'Fornecedor': '',
+            'Data Entrega': '',
+            'Data Emissão': '',
+        }
+        if not texto_pagina:
+            return info
+
+        m = re.search(r'N[ºo°\.\u00ba]\s*Pedido:\s*(\d+)', texto_pagina)
+        if m:
+            info['Nº Pedido'] = m.group(1)
+
+        m = re.search(r'CNPJ:\s*([\d.\/\-]+)', texto_pagina)
+        if m:
+            info['CNPJ'] = m.group(1)
+
+        m = re.search(r'Raz[aã]o Social:\s*(.+?)(?:CNPJ:|$)', texto_pagina, re.IGNORECASE)
+        if m:
+            info['Razão Social'] = m.group(1).strip()
+
+        m = re.search(r'Fornecedor:\s*(.+?)(?:\n|Substitui|Data)', texto_pagina, re.IGNORECASE | re.DOTALL)
+        if m:
+            info['Fornecedor'] = m.group(1).strip().split('\n')[0].strip()
+
+        m = re.search(r'Data Entrega:\s*([\d\/]+)', texto_pagina)
+        if m:
+            info['Data Entrega'] = m.group(1)
+
+        m = re.search(r'Emiss[aã]o:\s*([\d\/]+)', texto_pagina)
+        if m:
+            info['Data Emissão'] = m.group(1)
+
+        return info
+
+    def extract(self, file_path):
+        produtos_extraidos = []
+        cabecalho_info = {}
+
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                for i, page in enumerate(pdf.pages, start=1):
+                    texto = page.extract_text() or ''
+                    
+                    if i == 1:
+                        cabecalho_info = self._extrair_cabecalho(texto)
+
+                    linhas = texto.split('\n')
+                    for line in linhas:
+                        line = line.strip()
+                        # Se parece com uma linha de produto (começa com EAN)
+                        if re.match(r'^\d{8,14}\s', line):
+                            m = self._RE_PRODUTO.search(line)
+                            if m:
+                                (ean, cod_forn, desc, qtde, emb, emb_qtd, 
+                                 desc_bonif, pr_unit, pr_emb, total) = m.groups()
+                                
+                                # Processar desc/bonif que podem estar agrupados (ex: 0,000,000)
+                                desc_bonif = desc_bonif.replace(' ', '')
+                                if ',' in desc_bonif and len(desc_bonif) >= 7: # heuristic para separar 0,00 e 0,000
+                                    # Por simplicidade de negócio, geralmente é tudo zero, 
+                                    # mas vamos garantir o valor original formatado
+                                    desco = '0,00'
+                                    bonif = '0,000'
+                                else:
+                                    desco, bonif = '0', '0'
+
+                                linha_produto = [
+                                    ean, 
+                                    cod_forn if cod_forn else '', 
+                                    desc, 
+                                    qtde, 
+                                    emb, 
+                                    emb_qtd,
+                                    desco, 
+                                    bonif, 
+                                    pr_unit, 
+                                    pr_emb, 
+                                    total
+                                ]
+                                produtos_extraidos.append(linha_produto)
+
+        except Exception as e:
+            print(f"Erro no KamelExtractor (Texto): {e}")
+            return []
+
+        if not produtos_extraidos:
+            return []
+
+        df_final = pd.DataFrame(produtos_extraidos, columns=self.CABECALHO_PRODUTO)
+
+        # Adicionar metadados do cabeçalho como primeiras colunas
+        for campo, valor in reversed(list(cabecalho_info.items())):
+            if campo not in df_final.columns:
+                df_final.insert(0, campo, valor)
+
+        # Converter colunas numéricas
+        def conv_num(val):
+            if isinstance(val, str) and val:
+                try:
+                    # Remove pontos de milhar, troca vírgula por ponto
+                    return float(val.replace('.', '').replace(',', '.'))
+                except ValueError:
+                    return val
+            return val
+
+        for col in ['Qtde', 'Pr. Unit', 'Pr. Emb', 'Vlr. Total', 'Emb Qtd']:
+            if col in df_final.columns:
+                df_final[col] = df_final[col].apply(conv_num)
+
+        # EAN para numérico
+        if 'EAN' in df_final.columns:
+            df_final['EAN'] = pd.to_numeric(df_final['EAN'], errors='coerce').fillna(0).astype('int64')
+
+        return [df_final]
+
+
+class BernardaoV2Extractor(PdfExtractor):
+    """
+    Extrator BERNARDÃO V2 — formato REDE BIZ texto (sem tabela).
+    Âncora de produto: CodForn CodInterno DescAbrev Emb EmbQtd Qtde ValUnit ValTotal ...
+    Suporta múltiplos PDFs (um por loja) concatenando todos em um único DataFrame.
+    """
+
+    # Regex da linha-âncora de produto
+    # Ex: '100315 33219 BEB.ENGOV CX 6 2,00 46,1500 92,30 92,30 0,00 ...'
+    _RE_PRODUTO = re.compile(
+        r'^(\d+)\s+'           # g1: Cód Fornecedor
+        r'(\d+)\s+'            # g2: Cód Interno
+        r'(.+?)\s+'            # g3: Descrição abreviada
+        r'(CX|UN|PC|KG|LT|PT|FR|FD|DZ|FD)\s+'  # g4: Emb tipo
+        r'(\d+)\s+'            # g5: Emb qtd
+        r'([\d,]+)\s+'         # g6: Qtde
+        r'([\d,]+)\s+'         # g7: Val Unit
+        r'([\d,]+)'            # g8: Val Total Item
+    )
+
+    _RE_PEDIDO   = re.compile(r'PEDIDO DE COMPRAS\s+(\S+)')
+    _RE_CNPJ     = re.compile(r'CNPJ\s+([\d\.\/\-]+)')
+    _RE_LOJA     = re.compile(r'R\. Social .+?LTDA\s+(.+?)(?:\s+R\. Social|\s+Endere|$)', re.DOTALL)
+    _RE_EMISSAO  = re.compile(r'Data da emiss[aã]o\s+([\d\/]+)', re.IGNORECASE)
+    _RE_ENTREGA  = re.compile(r'Previs[aã]o de entrega\s+([\d\/]+)', re.IGNORECASE)
+    _RE_DLIMITE  = re.compile(r'Data limite para entrega\s+([\d\/]+)', re.IGNORECASE)
+    _RE_TOTAL    = re.compile(r'Valor total do pedido\s+([\d\.,]+)', re.IGNORECASE)
+    _RE_EAN      = re.compile(r'EANs?:\s*([\d,\s]+)')
+
+    def _conv_num(self, val):
+        if isinstance(val, str) and val:
+            try:
+                return float(val.replace('.', '').replace(',', '.'))
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    def _extrair_cabecalho(self, texto):
+        """Extrai metadados do cabeçalho do PDF."""
+        info = {
+            'Nº Pedido': '',
+            'CNPJ Loja': '',
+            'Loja': '',
+            'Data Emissão': '',
+            'Previsão Entrega': '',
+            'Data Limite Entrega': '',
+            'Valor Total Pedido': '',
+        }
+
+        m = self._RE_PEDIDO.search(texto)
+        if m:
+            info['Nº Pedido'] = m.group(1).strip()
+
+        # CNPJ do cliente (segundo CNPJ que aparece, que é o da loja)
+        cnpjs = self._RE_CNPJ.findall(texto)
+        if len(cnpjs) >= 2:
+            info['CNPJ Loja'] = cnpjs[1]
+        elif cnpjs:
+            info['CNPJ Loja'] = cnpjs[0]
+
+        # Nome da loja — aparece após "SUPERMERCADO BERNARDAO LTDA"
+        m = re.search(r'SUPERMERCADO BERNARDAO LTDA\s+(SUPERMERCADO BERNARDAO[^\n]+)', texto)
+        if m:
+            info['Loja'] = m.group(1).strip()
+
+        m = self._RE_EMISSAO.search(texto)
+        if m:
+            info['Data Emissão'] = m.group(1)
+
+        m = self._RE_ENTREGA.search(texto)
+        if m:
+            info['Previsão Entrega'] = m.group(1)
+
+        m = self._RE_DLIMITE.search(texto)
+        if m:
+            info['Data Limite Entrega'] = m.group(1)
+
+        m = self._RE_TOTAL.search(texto)
+        if m:
+            info['Valor Total Pedido'] = m.group(1)
+
+        return info
+
+    def extract(self, file_path):
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                texto_completo = ''
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        texto_completo += t + '\n'
+        except Exception as e:
+            print(f"Erro no BernardaoV2Extractor (leitura): {e}")
+            return []
+
+        cabecalho = self._extrair_cabecalho(texto_completo)
+        linhas = texto_completo.split('\n')
+
+        produtos_list = []
+        current_produto = None
+        in_produtos = False   # True após detectar o cabeçalho da seção de itens
+
+        for i, linha in enumerate(linhas):
+            linha_s = linha.strip()
+
+            # Detecta início da seção de produtos pela linha de cabeçalho
+            if 'a Receber' in linha_s and 'Unit.' in linha_s:
+                in_produtos = True
+                continue
+
+            # Detecta fim da seção
+            if in_produtos and ('TOTAIS' in linha_s or 'DADOS ADICIONAIS' in linha_s):
+                if current_produto:
+                    produtos_list.append(current_produto)
+                    current_produto = None
+                in_produtos = False
+                continue
+
+            if not in_produtos:
+                continue
+
+            # Tenta casar linha-âncora de produto
+            m = self._RE_PRODUTO.match(linha_s)
+            if m:
+                # Salva produto anterior
+                if current_produto:
+                    produtos_list.append(current_produto)
+
+                current_produto = {
+                    'Nº Pedido':        cabecalho['Nº Pedido'],
+                    'CNPJ Loja':        cabecalho['CNPJ Loja'],
+                    'Loja':             cabecalho['Loja'],
+                    'Data Emissão':     cabecalho['Data Emissão'],
+                    'Previsão Entrega': cabecalho['Previsão Entrega'],
+                    'Cód Fornecedor':   m.group(1),
+                    'Cód Interno':      m.group(2),
+                    'Descrição':        m.group(3).strip(),
+                    'Embalagem':        m.group(4),
+                    'Emb Qtd':          int(m.group(5)),
+                    'Qtde':             self._conv_num(m.group(6)),
+                    'Val Unit':         self._conv_num(m.group(7)),
+                    'Val Total':        self._conv_num(m.group(8)),
+                    'EAN':              '',
+                }
+                continue
+
+            # Linhas de continuação (descrição complementar e EAN)
+            if current_produto:
+                # EAN
+                m_ean = self._RE_EAN.match(linha_s)
+                if m_ean:
+                    ean_raw = m_ean.group(1).strip().split(',')[0].strip()
+                    current_produto['EAN'] = ean_raw
+                    continue
+
+                # Ignora linhas puramente numéricas (sub-totais, etc.)
+                if re.match(r'^[\d,\.\s]+$', linha_s):
+                    continue
+
+                # Ignora rodapé/cabeçalho de página
+                skip_terms = ['PEDIDO DE COMPRAS', 'FORNECEDOR', 'R. Social',
+                              'Endere', 'Bairro', 'Cidade', 'Cep', 'Inscri',
+                              'ENDERECO', 'COBRAN', 'ENTREGA', 'Cod Forn']
+                if any(t in linha_s for t in skip_terms):
+                    continue
+
+                # Acumula descrição
+                if linha_s:
+                    current_produto['Descrição'] += ' ' + linha_s
+
+        # Garante que o último produto seja salvo
+        if current_produto:
+            produtos_list.append(current_produto)
+
+        if not produtos_list:
+            return []
+
+        df = pd.DataFrame(produtos_list)
+
+        # EAN como inteiro
+        if 'EAN' in df.columns:
+            df['EAN'] = pd.to_numeric(df['EAN'], errors='coerce').fillna(0).astype('int64')
+
+        # Limpa espaços extras na descrição
+        if 'Descrição' in df.columns:
+            df['Descrição'] = df['Descrição'].str.strip()
+
+        return [df]

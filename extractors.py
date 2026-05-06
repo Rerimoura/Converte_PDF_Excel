@@ -1946,3 +1946,119 @@ class BernardaoV2Extractor(PdfExtractor):
             df['Descrição'] = df['Descrição'].str.strip()
 
         return [df]
+
+class BomPrecoExtractor(PdfExtractor):
+    """Extração específica para pedidos BOM PREÇO"""
+    
+    def extract(self, file_path):
+        try:
+            produtos = []
+            
+            # Limites baseados no alinhamento das colunas (x0 até x1 estimado)
+            cols = {
+                'Código Fornecedor': (0, 50),
+                'Descrição': (50, 245),
+                'EAN': (245, 310),
+                'Saldo Atual': (310, 365),
+                'Custo Última Compra': (365, 425),
+                'Qtd. Última Compra': (425, 475),
+                'Data Última Compra': (475, 530),
+                'Qtd. Venda': (530, 590),
+                'Gramatura': (590, 640),
+                'Embalagem': (640, 680),
+                'Quantidade': (680, 740),
+                'Preço': (740, 800)
+            }
+            
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    words = page.extract_words()
+                    
+                    lines = []
+                    current_line = []
+                    current_top = None
+                    
+                    # Ordena palavras por posição vertical (linha) e depois horizontal (coluna)
+                    words = sorted(words, key=lambda w: (w['top'], w['x0']))
+                    
+                    for w in words:
+                        if current_top is None:
+                            current_top = w['top']
+                            current_line.append(w)
+                        elif abs(w['top'] - current_top) < 3: # Margem de erro na mesma linha
+                            current_line.append(w)
+                        else:
+                            lines.append(current_line)
+                            current_line = [w]
+                            current_top = w['top']
+                    if current_line:
+                        lines.append(current_line)
+                        
+                    current_produto = None
+                    for line in lines:
+                        # Checa se é linha principal do produto (Código na col 0)
+                        cod_words = [w for w in line if cols['Código Fornecedor'][0] <= w['x0'] < cols['Código Fornecedor'][1]]
+                        if cod_words and cod_words[0]['text'].isdigit():
+                            if current_produto:
+                                produtos.append(current_produto)
+                            
+                            current_produto = {k: '' for k in cols.keys()}
+                            
+                            for w in line:
+                                for col_name, (x_min, x_max) in cols.items():
+                                    word_center = (w['x0'] + w['x1']) / 2
+                                    if x_min <= word_center < x_max:
+                                        if current_produto[col_name]:
+                                            current_produto[col_name] += ' ' + w['text']
+                                        else:
+                                            current_produto[col_name] = w['text']
+                                        break
+                        elif current_produto:
+                            # Verifica se é continuação da descrição ou cabeçalho intruso
+                            texto_linha = ' '.join([w['text'] for w in line])
+                            if 'Página' in texto_linha or 'Local de Estoque' in texto_linha or 'Fornecedor' in texto_linha or 'Super Bom Preço' in texto_linha:
+                                current_produto = None # Corta o produto se achou cabeçalho/rodapé
+                                continue
+                                
+                            desc_words = [w for w in line if cols['Descrição'][0] <= w['x0'] < cols['Descrição'][1]]
+                            # Apenas adiciona se tiver palavras SOMENTE na coluna de descrição
+                            outras_cols = [w for w in line if not (cols['Descrição'][0] <= w['x0'] < cols['Descrição'][1])]
+                            if desc_words and not outras_cols:
+                                extra_desc = ' '.join(w['text'] for w in desc_words)
+                                current_produto['Descrição'] += ' ' + extra_desc
+                    
+                    if current_produto:
+                        produtos.append(current_produto)
+                        current_produto = None
+
+            if not produtos:
+                return []
+                
+            df = pd.DataFrame(produtos)
+            
+            # Formatação de campos numéricos para excel
+            def conv_num(val):
+                if isinstance(val, str) and val.strip():
+                    val_clean = val.replace('.', '').replace(',', '.')
+                    try:
+                        return float(val_clean)
+                    except ValueError:
+                        return 0.0
+                return val
+                
+            cols_to_convert = ['Quantidade', 'Saldo Atual', 'Custo Última Compra', 'Qtd. Última Compra', 'Qtd. Venda', 'Preço']
+            for c in cols_to_convert:
+                if c in df.columns:
+                    df[c] = df[c].apply(conv_num)
+                    
+            if 'EAN' in df.columns:
+                df['EAN'] = pd.to_numeric(df['EAN'], errors='coerce').fillna(0).astype('int64')
+                
+            if 'Código Fornecedor' in df.columns:
+                df['Código Fornecedor'] = pd.to_numeric(df['Código Fornecedor'], errors='coerce').fillna(0).astype('int64')
+                
+            return [df]
+            
+        except Exception as e:
+            print(f"Error in BomPrecoExtractor: {e}")
+            return []

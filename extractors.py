@@ -2062,3 +2062,75 @@ class BomPrecoExtractor(PdfExtractor):
         except Exception as e:
             print(f"Error in BomPrecoExtractor: {e}")
             return []
+
+class KiJoiaExtractor(PdfExtractor):
+    """Extrator para formato KI JOIA"""
+    def extract(self, file_path):
+        produtos = []
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    lines = page.extract_text().split("\n")
+                    for line in lines:
+                        line_limpa = line.strip()
+                        match = re.search(r'([\d,\.-]+)\s+([\d,\.-]+)\s+([\d,\.-]+)\s+([\d\/]+)\s+([\d,\.-]+)\s+([\d,\.-]+)\s+([\d,\.-]+)\s+([\d,\.-]+)$', line_limpa)
+                        if match:
+                            tail = match.group(0)
+                            head = line_limpa[:-len(tail)].strip()
+                            
+                            head_parts = head.split(' ', 1)
+                            if len(head_parts) < 2:
+                                continue
+                            codigo = head_parts[0]
+                            rest = head_parts[1]
+                            
+                            rest_parts = rest.rsplit(' ', 1)
+                            gtin = ""
+                            descricao = rest
+                            if len(rest_parts) == 2 and re.match(r'^\d{8,14}$', rest_parts[1]):
+                                gtin = rest_parts[1]
+                                descricao = rest_parts[0]
+                                
+                            produtos.append({
+                                'Código': codigo,
+                                'Descrição': descricao,
+                                'GTIN': gtin,
+                                'Estoque disp.': match.group(1),
+                                'Mês 1': match.group(2),
+                                'Mês 2': match.group(3),
+                                'Data últ. cpr.': match.group(4),
+                                'Qnt. últ. cpr.': match.group(5),
+                                'Prç. efetivo': match.group(6),
+                                'Prç. mrg. zero': match.group(7),
+                                'Prç. venda': match.group(8)
+                            })
+                            
+            if produtos:
+                df = pd.DataFrame(produtos)
+                def conv_num(val):
+                    if isinstance(val, str):
+                        val_clean = val.replace('.', '').replace(',', '.')
+                        try:
+                            return float(val_clean)
+                        except ValueError:
+                            return 0.0
+                    return val
+                    
+                cols_to_convert = ['Estoque disp.', 'Mês 1', 'Mês 2', 'Qnt. últ. cpr.', 'Prç. efetivo', 'Prç. mrg. zero', 'Prç. venda']
+                for c in cols_to_convert:
+                    if c in df.columns:
+                        df[c] = df[c].apply(conv_num)
+                        
+                if 'GTIN' in df.columns:
+                    df['GTIN'] = pd.to_numeric(df['GTIN'], errors='coerce').fillna(0).astype('int64')
+                    
+                if 'Código' in df.columns:
+                    df['Código'] = pd.to_numeric(df['Código'], errors='coerce').fillna(0).astype('int64')
+                    
+                return [df]
+            else:
+                return []
+                
+        except Exception as e:
+            print(f"Error in KiJoiaExtractor: {e}")
+            return []

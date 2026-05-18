@@ -5,7 +5,7 @@ import tempfile
 import os
 import zipfile
 import re
-from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, MondelezExtractor, SilveiraExtractor, BernardaoExtractor, BernardaoV2Extractor, TresIrmaosExtractor, RedeLucasExtractor, SupermaxiExtractor, KamelExtractor, BomPrecoExtractor, TABULA_AVAILABLE
+from extractors import PdfPlumberExtractor, TabulaExtractor, TextExtractor, RedeBizExtractor, MondelezExtractor, SilveiraExtractor, BernardaoExtractor, BernardaoV2Extractor, TresIrmaosExtractor, RedeLucasExtractor, SupermaxiExtractor, KamelExtractor, BomPrecoExtractor, TABULA_AVAILABLE, KiJoiaExtractor
 
 st.set_page_config(
     page_title="Conversor PDF para Excel",
@@ -54,6 +54,7 @@ if uploaded_files:
         "REDE LUCAS",
         "SUPERMAXI",
         "BOM PREÇO",
+        "KI JOIA",
         "PDFPlumber (recomendado)", 
         "Texto (extração inteligente)"
     ]
@@ -124,6 +125,8 @@ if uploaded_files:
                     extractor = SupermaxiExtractor()
                 elif "BOM PREÇO" in metodo_extracao:
                     extractor = BomPrecoExtractor()
+                elif "KI JOIA" in metodo_extracao:
+                    extractor = KiJoiaExtractor()
                 elif "PDFPlumber" in metodo_extracao:
                     extractor = PdfPlumberExtractor()
                 elif "Texto" in metodo_extracao:

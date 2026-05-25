@@ -2065,48 +2065,95 @@ class BomPrecoExtractor(PdfExtractor):
 
 class KiJoiaExtractor(PdfExtractor):
     """Extrator para formato KI JOIA"""
+
+    # Regex matching the product lines in kijoia.pdf:
+    # E.g. "67348 7896094910904 ADOCANTE LIQ ZERO CAL 100ML SACARINA UN 48 5,88 0,00 18,0 282,24"
+    _RE_PRODUTO = re.compile(
+        r'^(\d+)\s+'                         # 1. Código
+        r'(\d{8,14})\s+'                     # 2. GTIN (EAN)
+        r'(.+?)\s+'                          # 3. Descrição
+        r'([A-Z/]+)\s+'                      # 4. Cmp (Uni)
+        r'(\d+)\s+'                          # 5. Quant Pedida
+        r'([\d\.,\-]+)\s+'                   # 6. Preço Compra
+        r'([\d\.,\-]+)\s+'                   # 7. Valor Desc (or Acrés)
+        r'([\d\.,\-]+)\s+'                   # 8. Icms
+        r'([\d\.,\-]+)$'                     # 9. Valor Líquido
+    )
+
     def extract(self, file_path):
         produtos = []
+        info_cabecalho = {
+            'Nº Pedido': '',
+            'CNPJ Loja': '',
+            'Loja': '',
+            'Fornecedor': '',
+            'Data Pedido': '',
+            'Previsão Entrega': ''
+        }
+        
         try:
             with pdfplumber.open(file_path) as pdf:
+                # Extract headers from the first page
+                if pdf.pages:
+                    first_page_text = pdf.pages[0].extract_text() or ""
+                    
+                    m_pedido = re.search(r'N[uú]mero do Pedido:\s*(\d+)', first_page_text)
+                    if m_pedido:
+                        info_cabecalho['Nº Pedido'] = m_pedido.group(1).strip()
+                        
+                    m_cnpj = re.search(r'CNPJ:\s*([\d\.\/\-]+)', first_page_text)
+                    if m_cnpj:
+                        info_cabecalho['CNPJ Loja'] = m_cnpj.group(1).strip()
+                        
+                    m_loja = re.search(r'Empresa do Pedido:\s*(.+?)(?:\n|$)', first_page_text)
+                    if m_loja:
+                        info_cabecalho['Loja'] = m_loja.group(1).strip()
+                        
+                    m_forn = re.search(r'Fornecedor:\s*(.+?)(?:\n|$)', first_page_text)
+                    if m_forn:
+                        info_cabecalho['Fornecedor'] = m_forn.group(1).strip()
+                        
+                    m_data = re.search(r'Data do Pedido:\s*([\d\/]+)', first_page_text)
+                    if m_data:
+                        info_cabecalho['Data Pedido'] = m_data.group(1).strip()
+                        
+                    m_prev = re.search(r'Previs[aã]o de entrega:\s*([\d\/]+)', first_page_text)
+                    if m_prev:
+                        info_cabecalho['Previsão Entrega'] = m_prev.group(1).strip()
+
+                # Extract product lines from all pages
                 for page in pdf.pages:
-                    lines = page.extract_text().split("\n")
+                    text = page.extract_text() or ""
+                    lines = text.split("\n")
                     for line in lines:
                         line_limpa = line.strip()
-                        match = re.search(r'([\d,\.-]+)\s+([\d,\.-]+)\s+([\d,\.-]+)\s+([\d\/]+)\s+([\d,\.-]+)\s+([\d,\.-]+)\s+([\d,\.-]+)\s+([\d,\.-]+)$', line_limpa)
-                        if match:
-                            tail = match.group(0)
-                            head = line_limpa[:-len(tail)].strip()
-                            
-                            head_parts = head.split(' ', 1)
-                            if len(head_parts) < 2:
-                                continue
-                            codigo = head_parts[0]
-                            rest = head_parts[1]
-                            
-                            rest_parts = rest.rsplit(' ', 1)
-                            gtin = ""
-                            descricao = rest
-                            if len(rest_parts) == 2 and re.match(r'^\d{8,14}$', rest_parts[1]):
-                                gtin = rest_parts[1]
-                                descricao = rest_parts[0]
+                        if not line_limpa:
+                            continue
+                        
+                        # Identify potential product lines starting with a number and EAN
+                        if re.match(r'^\d+\s+\d+\s+', line_limpa):
+                            match = self._RE_PRODUTO.match(line_limpa)
+                            if match:
+                                item = {
+                                    'Código': match.group(1),
+                                    'EAN': match.group(2),  # Maps GTIN to EAN for consistency
+                                    'Descrição': match.group(3),
+                                    'Cmp': match.group(4),
+                                    'Quant Pedida': match.group(5),
+                                    'Preço Compra': match.group(6),
+                                    'Valor Desc': match.group(7),
+                                    'Icms': match.group(8),
+                                    'Valor Líquido': match.group(9)
+                                }
+                                # Add header info
+                                for k, v in info_cabecalho.items():
+                                    item[k] = v
+                                produtos.append(item)
                                 
-                            produtos.append({
-                                'Código': codigo,
-                                'Descrição': descricao,
-                                'GTIN': gtin,
-                                'Estoque disp.': match.group(1),
-                                'Mês 1': match.group(2),
-                                'Mês 2': match.group(3),
-                                'Data últ. cpr.': match.group(4),
-                                'Qnt. últ. cpr.': match.group(5),
-                                'Prç. efetivo': match.group(6),
-                                'Prç. mrg. zero': match.group(7),
-                                'Prç. venda': match.group(8)
-                            })
-                            
             if produtos:
                 df = pd.DataFrame(produtos)
+                
+                # Conversion function for floating values
                 def conv_num(val):
                     if isinstance(val, str):
                         val_clean = val.replace('.', '').replace(',', '.')
@@ -2115,14 +2162,14 @@ class KiJoiaExtractor(PdfExtractor):
                         except ValueError:
                             return 0.0
                     return val
-                    
-                cols_to_convert = ['Estoque disp.', 'Mês 1', 'Mês 2', 'Qnt. últ. cpr.', 'Prç. efetivo', 'Prç. mrg. zero', 'Prç. venda']
-                for c in cols_to_convert:
+                
+                cols_float = ['Quant Pedida', 'Preço Compra', 'Valor Desc', 'Icms', 'Valor Líquido']
+                for c in cols_float:
                     if c in df.columns:
                         df[c] = df[c].apply(conv_num)
                         
-                if 'GTIN' in df.columns:
-                    df['GTIN'] = pd.to_numeric(df['GTIN'], errors='coerce').fillna(0).astype('int64')
+                if 'EAN' in df.columns:
+                    df['EAN'] = pd.to_numeric(df['EAN'], errors='coerce').fillna(0).astype('int64')
                     
                 if 'Código' in df.columns:
                     df['Código'] = pd.to_numeric(df['Código'], errors='coerce').fillna(0).astype('int64')

@@ -2093,37 +2093,35 @@ class KiJoiaExtractor(PdfExtractor):
         
         try:
             with pdfplumber.open(file_path) as pdf:
-                # Extract headers from the first page
-                if pdf.pages:
-                    first_page_text = pdf.pages[0].extract_text() or ""
+                # Extract product lines from all pages, updating headers page-by-page
+                for page in pdf.pages:
+                    text = page.extract_text() or ""
                     
-                    m_pedido = re.search(r'N[uú]mero do Pedido:\s*(\d+)', first_page_text)
+                    # Update header info if found on this page
+                    m_pedido = re.search(r'N[uú]mero do Pedido:\s*(\d+)', text)
                     if m_pedido:
                         info_cabecalho['Nº Pedido'] = m_pedido.group(1).strip()
                         
-                    m_cnpj = re.search(r'CNPJ:\s*([\d\.\/\-]+)', first_page_text)
+                    m_cnpj = re.search(r'CNPJ:\s*([\d\.\/\-]+)', text)
                     if m_cnpj:
                         info_cabecalho['CNPJ Loja'] = m_cnpj.group(1).strip()
                         
-                    m_loja = re.search(r'Empresa do Pedido:\s*(.+?)(?:\n|$)', first_page_text)
+                    m_loja = re.search(r'Empresa do Pedido:\s*(.+?)(?:\n|$)', text)
                     if m_loja:
                         info_cabecalho['Loja'] = m_loja.group(1).strip()
                         
-                    m_forn = re.search(r'Fornecedor:\s*(.+?)(?:\n|$)', first_page_text)
+                    m_forn = re.search(r'Fornecedor:\s*(.+?)(?:\n|$)', text)
                     if m_forn:
                         info_cabecalho['Fornecedor'] = m_forn.group(1).strip()
                         
-                    m_data = re.search(r'Data do Pedido:\s*([\d\/]+)', first_page_text)
+                    m_data = re.search(r'Data do Pedido:\s*([\d\/]+)', text)
                     if m_data:
                         info_cabecalho['Data Pedido'] = m_data.group(1).strip()
                         
-                    m_prev = re.search(r'Previs[aã]o de entrega:\s*([\d\/]+)', first_page_text)
+                    m_prev = re.search(r'Previs[aã]o de entrega:\s*([\d\/]+)', text)
                     if m_prev:
                         info_cabecalho['Previsão Entrega'] = m_prev.group(1).strip()
 
-                # Extract product lines from all pages
-                for page in pdf.pages:
-                    text = page.extract_text() or ""
                     lines = text.split("\n")
                     for line in lines:
                         line_limpa = line.strip()

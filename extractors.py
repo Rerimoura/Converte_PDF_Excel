@@ -1677,71 +1677,78 @@ class KamelExtractor(PdfExtractor):
         return info
 
     def extract(self, file_path):
-        produtos_extraidos = []
-        cabecalho_info = {}
+        """
+        Suporta PDFs com múltiplos pedidos.
+        Cada pedido começa numa página com 'Página: 1' no cabeçalho.
+        O cabeçalho é re-extraído a cada novo pedido e associado aos seus produtos.
+        """
+        todos_produtos = []  # lista de dicts com cabeçalho + dados do produto
 
         try:
             with pdfplumber.open(file_path) as pdf:
-                for i, page in enumerate(pdf.pages, start=1):
+                cabecalho_info = {}
+
+                for page in pdf.pages:
                     texto = page.extract_text() or ''
-                    
-                    if i == 1:
+
+                    # Detecta início de novo pedido: linha "Pedido de Compra Página: 1"
+                    # Cada pedido começa numa página cujo cabeçalho contém "Página: 1"
+                    if re.search(r'P[aá]gina:\s*1\b', texto):
                         cabecalho_info = self._extrair_cabecalho(texto)
 
                     linhas = texto.split('\n')
                     for line in linhas:
                         line = line.strip()
-                        # Se parece com uma linha de produto (começa com EAN)
+                        # Linha de produto começa com sequência de 8–14 dígitos (EAN)
                         if re.match(r'^\d{8,14}\s', line):
                             m = self._RE_PRODUTO.search(line)
                             if m:
-                                (ean, cod_forn, desc, qtde, emb, emb_qtd, 
+                                (ean, cod_forn, desc, qtde, emb, emb_qtd,
                                  desc_bonif, pr_unit, pr_emb, total) = m.groups()
-                                
-                                # Processar desc/bonif que podem estar agrupados (ex: 0,000,000)
+
+                                # Separar Desconto / Bonificação agrupados (ex: 0,000,000)
                                 desc_bonif = desc_bonif.replace(' ', '')
-                                if ',' in desc_bonif and len(desc_bonif) >= 7: # heuristic para separar 0,00 e 0,000
-                                    # Por simplicidade de negócio, geralmente é tudo zero, 
-                                    # mas vamos garantir o valor original formatado
+                                if ',' in desc_bonif and len(desc_bonif) >= 7:
                                     desco = '0,00'
                                     bonif = '0,000'
                                 else:
                                     desco, bonif = '0', '0'
 
-                                linha_produto = [
-                                    ean, 
-                                    cod_forn if cod_forn else '', 
-                                    desc, 
-                                    qtde, 
-                                    emb, 
-                                    emb_qtd,
-                                    desco, 
-                                    bonif, 
-                                    pr_unit, 
-                                    pr_emb, 
-                                    total
-                                ]
-                                produtos_extraidos.append(linha_produto)
+                                # Monta linha com dados do cabeçalho do pedido atual
+                                produto = {
+                                    'Nº Pedido':    cabecalho_info.get('Nº Pedido', ''),
+                                    'CNPJ':         cabecalho_info.get('CNPJ', ''),
+                                    'Razão Social': cabecalho_info.get('Razão Social', ''),
+                                    'Fornecedor':   cabecalho_info.get('Fornecedor', ''),
+                                    'Data Entrega': cabecalho_info.get('Data Entrega', ''),
+                                    'Data Emissão': cabecalho_info.get('Data Emissão', ''),
+                                    'EAN':          ean,
+                                    'Cód Forn':     cod_forn if cod_forn else '',
+                                    'Descrição':    desc,
+                                    'Qtde':         qtde,
+                                    'Emb':          emb,
+                                    'Emb Qtd':      emb_qtd,
+                                    'Desco':        desco,
+                                    'Bonif':        bonif,
+                                    'Pr. Unit':     pr_unit,
+                                    'Pr. Emb':      pr_emb,
+                                    'Vlr. Total':   total,
+                                }
+                                todos_produtos.append(produto)
 
         except Exception as e:
             print(f"Erro no KamelExtractor (Texto): {e}")
             return []
 
-        if not produtos_extraidos:
+        if not todos_produtos:
             return []
 
-        df_final = pd.DataFrame(produtos_extraidos, columns=self.CABECALHO_PRODUTO)
-
-        # Adicionar metadados do cabeçalho como primeiras colunas
-        for campo, valor in reversed(list(cabecalho_info.items())):
-            if campo not in df_final.columns:
-                df_final.insert(0, campo, valor)
+        df_final = pd.DataFrame(todos_produtos)
 
         # Converter colunas numéricas
         def conv_num(val):
             if isinstance(val, str) and val:
                 try:
-                    # Remove pontos de milhar, troca vírgula por ponto
                     return float(val.replace('.', '').replace(',', '.'))
                 except ValueError:
                     return val
@@ -1751,7 +1758,7 @@ class KamelExtractor(PdfExtractor):
             if col in df_final.columns:
                 df_final[col] = df_final[col].apply(conv_num)
 
-        # EAN para numérico
+        # EAN para numérico (preserva zeros à esquerda não são comuns em EAN)
         if 'EAN' in df_final.columns:
             df_final['EAN'] = pd.to_numeric(df_final['EAN'], errors='coerce').fillna(0).astype('int64')
 
